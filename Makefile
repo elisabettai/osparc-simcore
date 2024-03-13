@@ -131,7 +131,7 @@ endif
 
 ## DOCKER BUILD -------------------------------
 #
-# - all builds are inmediatly tagged as 'local/{service}:${BUILD_TARGET}' where BUILD_TARGET='development', 'production', 'cache'
+# - all builds are immediatly tagged as 'local/{service}:${BUILD_TARGET}' where BUILD_TARGET='development', 'production', 'cache'
 # - only production and cache images are released (i.e. tagged pushed into registry)
 #
 SWARM_HOSTS = $(shell docker node ls --format="{{.Hostname}}" 2>$(if $(IS_WIN),NUL,/dev/null))
@@ -396,8 +396,8 @@ leave: ## Forces to stop all services, networks, etc by the node leaving the swa
 
 .PHONY: .init-swarm
 .init-swarm:
-	# Ensures swarm is initialized (careful we use a default pool of 172.16.0.1/16. Ensure you do not use private IPs in that range!)
-	$(if $(SWARM_HOSTS),,docker swarm init --advertise-addr=$(get_my_ip) --default-addr-pool 172.16.0.1/16)
+	# Ensures swarm is initialized (careful we use a default pool of 10.20.0.0/16. Ensure you do not use private IPs in that range!)
+	$(if $(SWARM_HOSTS),,docker swarm init --advertise-addr=$(get_my_ip) --default-addr-pool 10.20.0.0/16)
 
 
 ## DOCKER TAGS  -------------------------------
@@ -451,18 +451,31 @@ push-version: tag-version
 
 .PHONY: devenv devenv-all node-env
 
-.venv:
-	@python3 --version
-	python3 -m venv $@
+.check-uv-installed:
+		@echo "Checking if 'uv' is installed..."
+		@if ! command -v uv >/dev/null 2>&1; then \
+				printf "\033[31mError: 'uv' is not installed.\033[0m\n"; \
+				printf "To install 'uv', run the following command:\n"; \
+				printf "\033[34mcurl -LsSf https://astral.sh/uv/install.sh | sh\033[0m\n"; \
+				exit 1; \
+		else \
+				printf "\033[32m'uv' is installed. Version: \033[0m"; \
+				uv --version; \
+		fi
+
+
+.venv: .check-uv-installed
+	@uv venv $@
 	## upgrading tools to latest version in $(shell python3 --version)
-	$@/bin/pip3 --quiet install --upgrade \
+	@uv pip --quiet install --upgrade \
 		pip~=24.0 \
 		wheel \
-		setuptools
-	@$@/bin/pip3 list --verbose
+		setuptools \
+		uv
+	@uv pip list
 
 devenv: .venv .vscode/settings.json .vscode/launch.json ## create a development environment (configs, virtual-env, hooks, ...)
-	$</bin/pip3 --quiet install -r requirements/devenv.txt
+	@uv pip --quiet install -r requirements/devenv.txt
 	# Installing pre-commit hooks in current .git repo
 	@$</bin/pre-commit install
 	@echo "To activate the venv, execute 'source .venv/bin/activate'"
@@ -510,14 +523,13 @@ nodenv: node_modules ## builds node_modules local environ (TODO)
 
 pylint: ## python linting
 	# pylint version info
-	@/bin/bash -c "pylint --version"
+	@pylint --version
 	# Running linter in packages and services (except director)
 	@folders=$$(find $(CURDIR)/services $(CURDIR)/packages  -type d -not -path "*/director/*" -name 'src' -exec dirname {} \; | sort -u); \
 	exit_status=0; \
 	for folder in $$folders; do \
-		pushd "$$folder"; \
-		make pylint || exit_status=1; \
-		popd; \
+		echo "Linting $$folder"; \
+		$(MAKE_C) "$$folder" pylint || exit_status=1; \
 	done;\
 	exit $$exit_status
 	# Running linter elsewhere
@@ -730,8 +742,8 @@ _running_containers = $(shell docker ps -aq)
 
 clean-venv: devenv ## Purges .venv into original configuration
 	# Cleaning your venv
-	.venv/bin/pip-sync --quiet $(CURDIR)/requirements/devenv.txt
-	@pip list
+	@uv pip sync  --quiet $(CURDIR)/requirements/devenv.txt
+	@uv pip list
 
 clean-hooks: ## Uninstalls git pre-commit hooks
 	@-pre-commit uninstall 2> /dev/null || rm .git/hooks/pre-commit

@@ -14,6 +14,7 @@ from models_library.users import UserID
 from pydantic import ByteSize, Field, PositiveInt, parse_obj_as, validator
 from settings_library.base import BaseCustomSettings
 from settings_library.docker_registry import RegistrySettings
+from settings_library.node_ports import StorageAuthSettings
 from settings_library.postgres import PostgresSettings
 from settings_library.r_clone import RCloneSettings
 from settings_library.rabbit import RabbitSettings
@@ -141,16 +142,19 @@ class ApplicationSettings(BaseCustomSettings, MixinLoggingSettings):
     DY_SIDECAR_SERVICE_VERSION: ServiceVersion | None = None
     DY_SIDECAR_PRODUCT_NAME: ProductName | None = None
 
-    SYSTEM_MONITOR_SETTINGS: SystemMonitorSettings = Field(auto_default_from_env=True)
+    NODE_PORTS_STORAGE_AUTH: StorageAuthSettings | None = Field(
+        auto_default_from_env=True
+    )
+    DY_SIDECAR_R_CLONE_SETTINGS: RCloneSettings = Field(auto_default_from_env=True)
+
+    POSTGRES_SETTINGS: PostgresSettings = Field(auto_default_from_env=True)
+    RABBIT_SETTINGS: RabbitSettings = Field(auto_default_from_env=True)
 
     REGISTRY_SETTINGS: RegistrySettings = Field(auto_default_from_env=True)
 
-    RABBIT_SETTINGS: RabbitSettings | None = Field(auto_default_from_env=True)
-    DY_SIDECAR_R_CLONE_SETTINGS: RCloneSettings = Field(auto_default_from_env=True)
-
-    POSTGRES_SETTINGS: PostgresSettings | None = Field(auto_default_from_env=True)
-
     RESOURCE_TRACKING: ResourceTrackingSettings = Field(auto_default_from_env=True)
+
+    SYSTEM_MONITOR_SETTINGS: SystemMonitorSettings = Field(auto_default_from_env=True)
 
     @property
     def are_prometheus_metrics_enabled(self) -> bool:

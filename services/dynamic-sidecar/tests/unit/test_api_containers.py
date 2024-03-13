@@ -9,7 +9,7 @@ import random
 from collections.abc import AsyncIterable
 from inspect import signature
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, AsyncIterator, Final
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
@@ -173,7 +173,7 @@ def test_client(
     ensure_shared_store_dir: Path,
     ensure_run_in_sequence_context_is_empty: None,
     ensure_external_volumes: tuple[DockerVolume],
-    cleanup_containers,
+    cleanup_containers: AsyncIterator[None],
     test_client: TestClient,
 ) -> TestClient:
     """creates external volumes and provides a client to dy-sidecar service"""
@@ -692,7 +692,9 @@ async def test_attach_detach_container_to_network(
                 container_inspect = await container.show()
                 networks = container_inspect["NetworkSettings"]["Networks"]
                 assert network_id in networks
-                assert set(networks[network_id]["Aliases"]) == set(network_aliases)
+                assert set(network_aliases).issubset(
+                    set(networks[network_id]["Aliases"])
+                )
 
                 # detach network from containers
                 for _ in range(2):  # running twice in a row

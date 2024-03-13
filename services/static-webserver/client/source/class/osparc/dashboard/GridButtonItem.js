@@ -209,21 +209,25 @@ qx.Class.define("osparc.dashboard.GridButtonItem", {
     // overridden
     _applyLastChangeDate: function(value, old) {
       if (value && (this.isResourceType("study") || this.isResourceType("template"))) {
-        const label = this.getChildControl("subtitle-text");
+        const label = this.getChildControl("modified-text");
         label.setValue(osparc.utils.Utils.formatDateAndTime(value));
       }
     },
 
+    createOwner: function(label) {
+      if (label === osparc.auth.Data.getInstance().getEmail()) {
+        const resourceAlias = osparc.utils.Utils.resourceTypeToAlias(this.getResourceType());
+        return qx.locale.Manager.tr(`My ${resourceAlias}`);
+      }
+      return osparc.utils.Utils.getNameFromEmail(label);
+    },
+
     // overridden
     _applyOwner: function(value, old) {
-      if (this.isResourceType("service")) {
-        const label = this.getChildControl("subtitle-text");
-        if (value === osparc.auth.Data.getInstance().getEmail()) {
-          label.setValue(this.tr("me"));
-        } else {
-          label.setValue(value);
-        }
-      }
+      const label = this.getChildControl("subtitle-text");
+      const user = this.createOwner(value);
+      label.setValue(user);
+      label.setVisibility(value ? "visible" : "excluded");
     },
 
     _applyAccessRights: function(value) {

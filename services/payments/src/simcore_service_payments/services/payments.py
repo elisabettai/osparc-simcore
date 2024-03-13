@@ -21,6 +21,8 @@ from models_library.api_schemas_webserver.wallets import (
     PaymentTransaction,
     WalletPaymentInitiated,
 )
+from models_library.payments import UserInvoiceAddress
+from models_library.products import StripePriceID, StripeTaxRateID
 from models_library.users import UserID
 from models_library.wallets import WalletID
 from pydantic import EmailStr, PositiveInt
@@ -34,13 +36,20 @@ from tenacity.retry import retry_if_exception_type
 from tenacity.stop import stop_after_attempt
 
 from .._constants import RUT
+from ..core.settings import ApplicationSettings
 from ..db.payments_transactions_repo import PaymentsTransactionsRepo
 from ..models.db import PaymentsTransactionsDB
 from ..models.db_to_api import to_payments_api_model
-from ..models.payments_gateway import InitPayment, PaymentInitiated
+from ..models.payments_gateway import (
+    COUNTRIES_WITH_VAT,
+    InitPayment,
+    PaymentInitiated,
+    StripeTaxExempt,
+)
 from ..models.schemas.acknowledgements import AckPayment, AckPaymentWithPaymentMethod
 from ..services.resource_usage_tracker import ResourceUsageTrackerApi
 from .notifier import NotifierService
+from .notifier_ws import WebSocketProvider
 from .payments_gateway import PaymentsGatewayApi
 
 _logger = logging.getLogger()
@@ -49,6 +58,7 @@ _logger = logging.getLogger()
 async def init_one_time_payment(
     gateway: PaymentsGatewayApi,
     repo: PaymentsTransactionsRepo,
+    settings: ApplicationSettings,
     *,
     amount_dollars: Decimal,
     target_credits: Decimal,
@@ -58,18 +68,30 @@ async def init_one_time_payment(
     user_id: UserID,
     user_name: str,
     user_email: EmailStr,
+    user_address: UserInvoiceAddress,
+    stripe_price_id: StripePriceID,
+    stripe_tax_rate_id: StripeTaxRateID,
     comment: str | None = None,
 ) -> WalletPaymentInitiated:
     initiated_at = arrow.utcnow().datetime
 
-    init = await gateway.init_payment(
+    init: PaymentInitiated = await gateway.init_payment(
         payment=InitPayment(
             amount_dollars=amount_dollars,
             credits=target_credits,
             user_name=user_name,
             user_email=user_email,
+            user_address=user_address,
             wallet_name=wallet_name,
-        )
+            stripe_price_id=stripe_price_id,
+            stripe_tax_rate_id=stripe_tax_rate_id,
+            stripe_tax_exempt_value=(
+                StripeTaxExempt.none
+                if user_address.country in COUNTRIES_WITH_VAT
+                else StripeTaxExempt.reverse
+            ),
+        ),
+        payment_gateway_tax_feature_enabled=settings.PAYMENTS_GATEWAY_TAX_FEATURE_ENABLED,
     )
 
     submission_link = gateway.get_form_payment_url(init.payment_id)
@@ -148,7 +170,8 @@ async def acknowledge_one_time_payment(
 async def on_payment_completed(
     transaction: PaymentsTransactionsDB,
     rut_api: ResourceUsageTrackerApi,
-    notifier: NotifierService | None,
+    notifier: NotifierService,
+    exclude: set | None = None,
 ):
     assert transaction.completed_at is not None  # nosec
     assert transaction.initiated_at < transaction.completed_at  # nosec
@@ -181,10 +204,11 @@ async def on_payment_completed(
             f"{credit_transaction_id=}",
         )
 
-    if notifier:
-        await notifier.notify_payment_completed(
-            user_id=transaction.user_id, payment=to_payments_api_model(transaction)
-        )
+    await notifier.notify_payment_completed(
+        user_id=transaction.user_id,
+        payment=to_payments_api_model(transaction),
+        exclude=exclude,
+    )
 
 
 async def pay_with_payment_method(  # noqa: PLR0913
@@ -192,6 +216,8 @@ async def pay_with_payment_method(  # noqa: PLR0913
     rut: ResourceUsageTrackerApi,
     repo_transactions: PaymentsTransactionsRepo,
     repo_methods: PaymentsMethodsRepo,
+    notifier: NotifierService,
+    settings: ApplicationSettings,
     *,
     payment_method_id: PaymentMethodID,
     amount_dollars: Decimal,
@@ -202,6 +228,9 @@ async def pay_with_payment_method(  # noqa: PLR0913
     user_id: UserID,
     user_name: str,
     user_email: EmailStr,
+    user_address: UserInvoiceAddress,
+    stripe_price_id: StripePriceID,
+    stripe_tax_rate_id: StripeTaxRateID,
     comment: str | None = None,
 ) -> PaymentTransaction:
     initiated_at = arrow.utcnow().datetime
@@ -217,8 +246,17 @@ async def pay_with_payment_method(  # noqa: PLR0913
             credits=target_credits,
             user_name=user_name,
             user_email=user_email,
+            user_address=user_address,
             wallet_name=wallet_name,
+            stripe_price_id=stripe_price_id,
+            stripe_tax_rate_id=stripe_tax_rate_id,
+            stripe_tax_exempt_value=(
+                StripeTaxExempt.none
+                if user_address.country in COUNTRIES_WITH_VAT
+                else StripeTaxExempt.reverse
+            ),
         ),
+        payment_gateway_tax_feature_enabled=settings.PAYMENTS_GATEWAY_TAX_FEATURE_ENABLED,
     )
 
     payment_id = ack.payment_id
@@ -255,7 +293,9 @@ async def pay_with_payment_method(  # noqa: PLR0913
     )
 
     # NOTE: notifications here are done as background-task after responding `POST /wallets/{wallet_id}/payments-methods/{payment_method_id}:pay`
-    await on_payment_completed(transaction, rut, notifier=None)
+    await on_payment_completed(
+        transaction, rut, notifier=notifier, exclude={WebSocketProvider.get_name()}
+    )
 
     return to_payments_api_model(transaction)
 

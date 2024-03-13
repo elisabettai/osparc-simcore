@@ -19,10 +19,11 @@ if [ "${SC_BUILD_TARGET}" = "development" ]; then
   command -v python | sed 's/^/    /'
 
   cd services/storage || exit 1
-  pip --quiet --no-cache-dir install -r requirements/dev.txt
+  pip install uv
+  uv pip --quiet --no-cache-dir install -r requirements/dev.txt
   cd - || exit 1
   echo "$INFO" "PIP :"
-  pip list | sed 's/^/    /'
+  uv pip list | sed 's/^/    /'
 
   echo "$INFO" "Setting entrypoint to use watchmedo autorestart..."
   entrypoint='watchmedo auto-restart --recursive --pattern="*.py;*/src/*" --ignore-patterns="*test*;pytest_simcore/*;setup.py;*ignore*" --ignore-directories --'

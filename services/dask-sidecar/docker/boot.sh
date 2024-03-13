@@ -28,7 +28,7 @@ if [ "${SC_BUILD_TARGET}" = "development" ]; then
   pip install --no-cache-dir -r requirements/dev.txt
   cd - || exit 1
   print_info "PIP :"
-  pip list | sed 's/^/    /'
+  uv pip list | sed 's/^/    /'
 fi
 
 # RUNNING application ----------------------------------------
@@ -43,11 +43,19 @@ logging:
   distributed.scheduler: ${LOG_LEVEL:-warning}
 EOF
 
-# Check if DASK_TLS_CA_FILE is present
+# Define the base configuration for distributed
+# the worker-saturation defines how the scheduler loads
+# the workers, see https://github.com/dask/distributed/blob/91350ab15c79de973597e319bd36cc8d56e9f999/distributed/scheduler.py
+cat >/home/scu/.config/dask/distributed.yaml <<EOF
+distributed:
+  scheduler:
+    worker-saturation: ${DASK_WORKER_SATURATION:-inf}
+EOF
+
+# Check if DASK_TLS_CA_FILE is present and add the necesary configs
 if [ -n "${DASK_TLS_CA_FILE:-}" ]; then
   print_info "TLS authentication enabled"
   cat >>/home/scu/.config/dask/distributed.yaml <<EOF
-distributed:
   comm:
     default-scheme: tls
     require-encryption: true

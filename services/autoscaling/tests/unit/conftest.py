@@ -21,7 +21,12 @@ import psutil
 import pytest
 import simcore_service_autoscaling
 from asgi_lifespan import LifespanManager
-from aws_library.ec2.models import EC2InstanceBootSpecific, EC2InstanceData
+from aws_library.ec2.models import (
+    EC2InstanceBootSpecific,
+    EC2InstanceData,
+    EC2InstanceType,
+    Resources,
+)
 from deepdiff import DeepDiff
 from faker import Faker
 from fakeredis.aioredis import FakeRedis
@@ -49,8 +54,13 @@ from simcore_service_autoscaling.core.settings import (
     ApplicationSettings,
     EC2Settings,
 )
-from simcore_service_autoscaling.models import Cluster, DaskTaskResources
+from simcore_service_autoscaling.models import (
+    AssociatedInstance,
+    Cluster,
+    DaskTaskResources,
+)
 from simcore_service_autoscaling.modules.docker import AutoscalingDocker
+from simcore_service_autoscaling.modules.ec2 import SimcoreEC2API
 from simcore_service_autoscaling.utils.utils_docker import (
     _OSPARC_SERVICE_READY_LABEL_KEY,
     _OSPARC_SERVICES_READY_DATETIME_LABEL_KEY,
@@ -745,3 +755,90 @@ def mock_docker_tag_node(mocker: MockerFixture) -> mock.Mock:
         autospec=True,
         side_effect=fake_tag_node,
     )
+
+
+@pytest.fixture
+def patch_ec2_client_start_aws_instances_min_number_of_instances(
+    mocker: MockerFixture,
+) -> mock.Mock:
+    """the moto library always returns min number of instances instead of max number of instances which makes
+    it difficult to test scaling to multiple of machines. this should help"""
+    original_fct = SimcoreEC2API.start_aws_instance
+
+    async def _change_parameters(*args, **kwargs) -> list[EC2InstanceData]:
+        new_kwargs = kwargs | {"min_number_of_instances": kwargs["number_of_instances"]}
+        print(f"patching start_aws_instance with: {new_kwargs}")
+        return await original_fct(*args, **new_kwargs)
+
+    return mocker.patch.object(
+        SimcoreEC2API,
+        "start_aws_instance",
+        autospec=True,
+        side_effect=_change_parameters,
+    )
+
+
+@pytest.fixture
+def random_fake_available_instances(faker: Faker) -> list[EC2InstanceType]:
+    list_of_instances = [
+        EC2InstanceType(
+            name=faker.pystr(),
+            resources=Resources(cpus=n, ram=ByteSize(n)),
+        )
+        for n in range(1, 30)
+    ]
+    random.shuffle(list_of_instances)
+    return list_of_instances
+
+
+@pytest.fixture
+def create_associated_instance(
+    fake_ec2_instance_data: Callable[..., EC2InstanceData],
+    app_settings: ApplicationSettings,
+    faker: Faker,
+    host_cpu_count: int,
+    host_memory_total: ByteSize,
+) -> Callable[[DockerNode, bool, dict[str, Any]], AssociatedInstance]:
+    def _creator(
+        node: DockerNode,
+        terminateable_time: bool,
+        fake_ec2_instance_data_override: dict[str, Any] | None = None,
+    ) -> AssociatedInstance:
+        assert app_settings.AUTOSCALING_EC2_INSTANCES
+        assert (
+            datetime.timedelta(seconds=10)
+            < app_settings.AUTOSCALING_EC2_INSTANCES.EC2_INSTANCES_TIME_BEFORE_TERMINATION
+        ), "this tests relies on the fact that the time before termination is above 10 seconds"
+        assert app_settings.AUTOSCALING_EC2_INSTANCES
+        seconds_delta = (
+            -datetime.timedelta(seconds=10)
+            if terminateable_time
+            else datetime.timedelta(seconds=10)
+        )
+
+        if fake_ec2_instance_data_override is None:
+            fake_ec2_instance_data_override = {}
+
+        return AssociatedInstance(
+            node=node,
+            ec2_instance=fake_ec2_instance_data(
+                launch_time=datetime.datetime.now(datetime.timezone.utc)
+                - app_settings.AUTOSCALING_EC2_INSTANCES.EC2_INSTANCES_TIME_BEFORE_TERMINATION
+                - datetime.timedelta(
+                    days=faker.pyint(min_value=0, max_value=100),
+                    hours=faker.pyint(min_value=0, max_value=100),
+                )
+                + seconds_delta,
+                resources=Resources(cpus=host_cpu_count, ram=host_memory_total),
+                **fake_ec2_instance_data_override,
+            ),
+        )
+
+    return _creator
+
+
+@pytest.fixture
+def mock_machines_buffer(monkeypatch: pytest.MonkeyPatch) -> int:
+    num_machines_in_buffer = 5
+    monkeypatch.setenv("EC2_INSTANCES_MACHINES_BUFFER", f"{num_machines_in_buffer}")
+    return num_machines_in_buffer

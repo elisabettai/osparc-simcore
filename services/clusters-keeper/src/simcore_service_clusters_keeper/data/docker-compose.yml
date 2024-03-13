@@ -4,13 +4,14 @@ services:
     image: ${DOCKER_REGISTRY:-itisfoundation}/dask-sidecar:${DOCKER_IMAGE_TAG}
     dns: 8.8.8.8 # needed to access internet from AWS
     init: true
-    hostname: "{{.Node.Hostname}}-{{.Service.Name}}-{{.Task.Slot}}"
+    hostname: "{{.Node.Hostname}}-{{.Task.Slot}}"
     environment:
       DASK_TLS_CA_FILE: ${DASK_TLS_CA_FILE}
       DASK_TLS_CERT: ${DASK_TLS_CERT}
       DASK_TLS_KEY: ${DASK_TLS_KEY}
       DASK_SCHEDULER_URL: tls://dask-scheduler:8786
       DASK_START_AS_SCHEDULER: 1
+      DASK_WORKER_SATURATION: ${DASK_WORKER_SATURATION}
       LOG_LEVEL: ${LOG_LEVEL}
     ports:
       - 8786:8786 # dask-scheduler access
@@ -34,7 +35,7 @@ services:
     image: ${DOCKER_REGISTRY:-itisfoundation}/dask-sidecar:${DOCKER_IMAGE_TAG}
     dns: 8.8.8.8 # needed to access internet from AWS
     init: true
-    hostname: "{{.Node.Hostname}}-{{.Service.Name}}"
+    hostname: "{{.Node.Hostname}}-{{.Task.Slot}}"
     volumes:
       - computational_shared_data:${SIDECAR_COMP_SERVICES_SHARED_FOLDER:-/home/scu/computational_shared_data}
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -49,6 +50,7 @@ services:
       DASK_TLS_CA_FILE: ${DASK_TLS_CA_FILE}
       DASK_TLS_CERT: ${DASK_TLS_CERT}
       DASK_TLS_KEY: ${DASK_TLS_KEY}
+      DASK_WORKER_SATURATION: ${DASK_WORKER_SATURATION}
       LOG_LEVEL: ${LOG_LEVEL}
       SIDECAR_COMP_SERVICES_SHARED_FOLDER: /home/scu/computational_shared_data
       SIDECAR_COMP_SERVICES_SHARED_VOLUME_NAME: computational_shared_data
@@ -72,7 +74,7 @@ services:
     image: ${DOCKER_REGISTRY:-itisfoundation}/autoscaling:${DOCKER_IMAGE_TAG}
     dns: 8.8.8.8 # needed to access internet from AWS
     init: true
-    hostname: "{{.Node.Hostname}}-{{.Service.Name}}-{{.Task.Slot}}"
+    hostname: "{{.Node.Hostname}}-{{.Task.Slot}}"
     environment:
       AUTOSCALING_EC2_ACCESS_KEY_ID: ${CLUSTERS_KEEPER_EC2_ACCESS_KEY_ID}
       AUTOSCALING_EC2_ENDPOINT: ${CLUSTERS_KEEPER_EC2_ENDPOINT}
@@ -117,7 +119,7 @@ services:
     image: "redis:6.2.6@sha256:4bed291aa5efb9f0d77b76ff7d4ab71eee410962965d052552db1fb80576431d"
     dns: 8.8.8.8 # needed to access internet from AWS
     init: true
-    hostname: "{{.Node.Hostname}}-{{.Service.Name}}-{{.Task.Slot}}"
+    hostname: "{{.Node.Hostname}}-{{.Task.Slot}}"
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s

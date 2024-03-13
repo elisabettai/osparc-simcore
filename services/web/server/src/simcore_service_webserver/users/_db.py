@@ -5,12 +5,16 @@ from aiohttp import web
 from aiopg.sa.connection import SAConnection
 from aiopg.sa.engine import Engine
 from aiopg.sa.result import ResultProxy, RowProxy
-from models_library.users import GroupID, UserID
+from models_library.users import GroupID, UserBillingDetails, UserID
 from simcore_postgres_database.models.users import UserStatus, users
+from simcore_postgres_database.models.users_details import (
+    users_pre_registration_details,
+)
 from simcore_postgres_database.utils_groups_extra_properties import (
     GroupExtraPropertiesNotFoundError,
     GroupExtraPropertiesRepo,
 )
+from simcore_postgres_database.utils_users import UsersRepo
 from simcore_service_webserver.users.exceptions import UserNotFoundError
 
 from ..db.models import user_to_groups
@@ -96,3 +100,72 @@ async def update_user_status(
         await conn.execute(
             users.update().values(status=new_status).where(users.c.id == user_id)
         )
+
+
+async def search_users_and_get_profile(
+    engine: Engine, *, email_like: str
+) -> list[RowProxy]:
+    async with engine.acquire() as conn:
+        columns = (
+            users.c.first_name,
+            users.c.last_name,
+            users.c.email,
+            users.c.phone,
+            users_pre_registration_details.c.pre_email,
+            users_pre_registration_details.c.pre_first_name,
+            users_pre_registration_details.c.pre_last_name,
+            users_pre_registration_details.c.company_name,
+            users_pre_registration_details.c.pre_phone,
+            users_pre_registration_details.c.address,
+            users_pre_registration_details.c.city,
+            users_pre_registration_details.c.state,
+            users_pre_registration_details.c.postal_code,
+            users_pre_registration_details.c.country,
+            users_pre_registration_details.c.user_id,
+            users.c.status,
+        )
+
+        left_outer_join = (
+            sa.select(*columns)
+            .select_from(
+                users_pre_registration_details.outerjoin(
+                    users, users.c.id == users_pre_registration_details.c.user_id
+                )
+            )
+            .where(users_pre_registration_details.c.pre_email.like(email_like))
+        )
+        right_outer_join = (
+            sa.select(*columns)
+            .select_from(
+                users.outerjoin(
+                    users_pre_registration_details,
+                    users.c.id == users_pre_registration_details.c.user_id,
+                )
+            )
+            .where(users.c.email.like(email_like))
+        )
+
+        result = await conn.execute(sa.union(left_outer_join, right_outer_join))
+        return await result.fetchall() or []
+
+
+async def new_user_details(
+    engine: Engine, email: str, created_by: UserID, **other_values
+) -> None:
+    async with engine.acquire() as conn:
+        await conn.execute(
+            sa.insert(users_pre_registration_details).values(
+                created_by=created_by, pre_email=email, **other_values
+            )
+        )
+
+
+async def get_user_billing_details(
+    engine: Engine, user_id: UserID
+) -> UserBillingDetails:
+    async with engine.acquire() as conn:
+        user_billing_details = await UsersRepo.get_billing_details(conn, user_id)
+        if not user_billing_details:
+            msg = f"Missing biling details for user {user_id}"
+            raise ValueError(msg)
+        return UserBillingDetails.from_orm(user_billing_details)
