@@ -84,6 +84,8 @@ export SWARM_STACK_NAME_NO_HYPHEN = $(subst -,_,$(SWARM_STACK_NAME))
 export DOCKER_IMAGE_TAG ?= latest
 export DOCKER_REGISTRY  ?= itisfoundation
 
+
+
 get_my_ip := $(shell hostname --all-ip-addresses | cut --delimiter=" " --fields=1)
 
 # NOTE: this is only for WSL2 as the WSL2 subsystem IP is changing on each reboot
@@ -127,6 +129,8 @@ else
 	@awk --posix 'BEGIN {FS = ":.*?## "} /^[[:alpha:][:space:]_-]+:.*?## / {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 endif
 
+test_python_version: ## Check Python version, throw error if compilation would fail with the installed version
+	python ./scripts/test_python_version.py
 
 
 ## DOCKER BUILD -------------------------------
@@ -234,7 +238,7 @@ CPU_COUNT = $(shell cat /proc/cpuinfo | grep processor | wc -l )
 	@export DOCKER_REGISTRY=local && \
 	export DOCKER_IMAGE_TAG=development && \
 	export DEV_PC_CPU_COUNT=${CPU_COUNT} && \
-	scripts/docker/docker-compose-config.bash -e .env \
+	scripts/docker/docker-stack-config.bash -e .env \
 		services/docker-compose.yml \
 		services/docker-compose.local.yml \
 		services/docker-compose.devel.yml \
@@ -244,7 +248,7 @@ CPU_COUNT = $(shell cat /proc/cpuinfo | grep processor | wc -l )
 	# Creating config for stack with 'local/{service}:production' to $@
 	@export DOCKER_REGISTRY=local && \
 	export DOCKER_IMAGE_TAG=production && \
-	scripts/docker/docker-compose-config.bash -e .env \
+	scripts/docker/docker-stack-config.bash -e .env \
 		services/docker-compose.yml \
 		services/docker-compose.local.yml \
 		> $@
@@ -254,7 +258,7 @@ CPU_COUNT = $(shell cat /proc/cpuinfo | grep processor | wc -l )
 	# Creating config for stack with 'local/{service}:production' (except of static-webserver -> static-webserver:development) to $@
 	@export DOCKER_REGISTRY=local && \
 	export DOCKER_IMAGE_TAG=production && \
-	scripts/docker/docker-compose-config.bash -e $< \
+	scripts/docker/docker-stack-config.bash -e $< \
 		services/docker-compose.yml \
 		services/docker-compose.local.yml \
 		services/docker-compose.devel-frontend.yml \
@@ -262,7 +266,7 @@ CPU_COUNT = $(shell cat /proc/cpuinfo | grep processor | wc -l )
 
 .stack-simcore-version.yml: .env $(docker-compose-configs)
 	# Creating config for stack with '$(DOCKER_REGISTRY)/{service}:${DOCKER_IMAGE_TAG}' to $@
-	@scripts/docker/docker-compose-config.bash -e .env \
+	@scripts/docker/docker-stack-config.bash -e .env \
 		services/docker-compose.yml \
 		services/docker-compose.local.yml \
 		> $@
@@ -272,13 +276,13 @@ CPU_COUNT = $(shell cat /proc/cpuinfo | grep processor | wc -l )
 	# Creating config for ops stack to $@
 ifdef ops_ci
 	@$(shell \
-		scripts/docker/docker-compose-config.bash -e .env \
+		scripts/docker/docker-stack-config.bash -e .env \
 		services/docker-compose-ops-ci.yml \
 		> $@ \
 	)
 else
 	@$(shell \
-		scripts/docker/docker-compose-config.bash -e .env \
+		scripts/docker/docker-stack-config.bash -e .env \
 		services/docker-compose-ops.yml \
 		> $@ \
 	)
@@ -396,8 +400,8 @@ leave: ## Forces to stop all services, networks, etc by the node leaving the swa
 
 .PHONY: .init-swarm
 .init-swarm:
-	# Ensures swarm is initialized (careful we use a default pool of 10.20.0.0/16. Ensure you do not use private IPs in that range!)
-	$(if $(SWARM_HOSTS),,docker swarm init --advertise-addr=$(get_my_ip) --default-addr-pool 10.20.0.0/16)
+	# Ensures swarm is initialized (careful we use a default pool of 172.20.0.0/14. Ensure you do not use private IPs in that range!)
+	$(if $(SWARM_HOSTS),,docker swarm init --advertise-addr=$(get_my_ip) --default-addr-pool 172.20.0.0/14)
 
 
 ## DOCKER TAGS  -------------------------------
@@ -474,7 +478,7 @@ push-version: tag-version
 		uv
 	@uv pip list
 
-devenv: .venv .vscode/settings.json .vscode/launch.json ## create a development environment (configs, virtual-env, hooks, ...)
+devenv: .venv test_python_version .vscode/settings.json .vscode/launch.json ## create a development environment (configs, virtual-env, hooks, ...)
 	@uv pip --quiet install -r requirements/devenv.txt
 	# Installing pre-commit hooks in current .git repo
 	@$</bin/pre-commit install

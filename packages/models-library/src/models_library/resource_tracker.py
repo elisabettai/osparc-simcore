@@ -1,9 +1,19 @@
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal
 from enum import auto
 from typing import Any, ClassVar, NamedTuple, TypeAlias
 
-from pydantic import BaseModel, Field, PositiveInt, validator
+from models_library.products import ProductName
+from pydantic import (
+    BaseModel,
+    ByteSize,
+    Extra,
+    Field,
+    NonNegativeInt,
+    PositiveInt,
+    validator,
+)
 
 from .rest_filters import Filters
 from .utils.enums import StrAutoEnum
@@ -132,3 +142,144 @@ class StartedAt(BaseModel):
 
 class ServiceResourceUsagesFilters(Filters):
     started_at: StartedAt
+
+
+## Pricing Plans
+
+
+class PricingPlanCreate(BaseModel):
+    product_name: ProductName
+    display_name: str
+    description: str
+    classification: PricingPlanClassification
+    pricing_plan_key: str
+
+    class Config:
+        schema_extra: ClassVar[dict[str, Any]] = {
+            "examples": [
+                {
+                    "product_name": "osparc",
+                    "display_name": "My pricing plan",
+                    "description": "This is general pricing plan",
+                    "classification": PricingPlanClassification.TIER,
+                    "pricing_plan_key": "my-unique-pricing-plan",
+                }
+            ]
+        }
+
+
+class PricingPlanUpdate(BaseModel):
+    pricing_plan_id: PricingPlanId
+    display_name: str
+    description: str
+    is_active: bool
+
+    class Config:
+        schema_extra: ClassVar[dict[str, Any]] = {
+            "examples": [
+                {
+                    "pricing_plan_id": 1,
+                    "display_name": "My pricing plan",
+                    "description": "This is general pricing plan",
+                    "is_active": True,
+                }
+            ]
+        }
+
+
+## Pricing Units
+
+
+class SpecificInfo(HardwareInfo):
+    """Custom information that is not propagated to the frontend. For example can be used
+    to store aws ec2 instance type."""
+
+
+class UnitExtraInfo(BaseModel):
+    """Custom information that is propagated to the frontend. Defined fields are mandatory."""
+
+    CPU: NonNegativeInt
+    RAM: ByteSize
+    VRAM: ByteSize
+
+    class Config:
+        allow_population_by_field_name = True
+        extra = Extra.allow
+        schema_extra: ClassVar[dict[str, Any]] = {
+            "examples": [
+                {
+                    "CPU": 32,
+                    "RAM": 64,
+                    "VRAM": 0,
+                    "SSD": 600,
+                    "custom key": "custom value",
+                }
+            ]
+        }
+
+
+class PricingUnitWithCostCreate(BaseModel):
+    pricing_plan_id: PricingPlanId
+    unit_name: str
+    unit_extra_info: UnitExtraInfo
+    default: bool
+    specific_info: SpecificInfo
+    cost_per_unit: Decimal
+    comment: str
+
+    class Config:
+        schema_extra: ClassVar[dict[str, Any]] = {
+            "examples": [
+                {
+                    "pricing_plan_id": 1,
+                    "unit_name": "My pricing plan",
+                    "unit_extra_info": UnitExtraInfo.Config.schema_extra["examples"][0],
+                    "default": True,
+                    "specific_info": {"aws_ec2_instances": ["t3.medium"]},
+                    "cost_per_unit": 10,
+                    "comment": "This pricing unit was create by Foo",
+                }
+            ]
+        }
+
+
+class PricingUnitCostUpdate(BaseModel):
+    cost_per_unit: Decimal
+    comment: str
+
+
+class PricingUnitWithCostUpdate(BaseModel):
+    pricing_plan_id: PricingPlanId
+    pricing_unit_id: PricingUnitId
+    unit_name: str
+    unit_extra_info: UnitExtraInfo
+    default: bool
+    specific_info: SpecificInfo
+    pricing_unit_cost_update: None | PricingUnitCostUpdate
+
+    class Config:
+        schema_extra: ClassVar[dict[str, Any]] = {
+            "examples": [
+                {
+                    "pricing_plan_id": 1,
+                    "pricing_unit_id": 1,
+                    "unit_name": "My pricing plan",
+                    "unit_extra_info": UnitExtraInfo.Config.schema_extra["examples"][0],
+                    "default": True,
+                    "specific_info": {"aws_ec2_instances": ["t3.medium"]},
+                    "pricing_unit_cost_update": {
+                        "cost_per_unit": 10,
+                        "comment": "This pricing unit was updated by Foo",
+                    },
+                },
+                {
+                    "pricing_plan_id": 1,
+                    "pricing_unit_id": 1,
+                    "unit_name": "My pricing plan",
+                    "unit_extra_info": UnitExtraInfo.Config.schema_extra["examples"][0],
+                    "default": True,
+                    "specific_info": {"aws_ec2_instances": ["t3.medium"]},
+                    "pricing_unit_cost_update": None,
+                },
+            ]
+        }
