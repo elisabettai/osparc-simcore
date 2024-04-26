@@ -552,7 +552,7 @@ qx.Class.define("osparc.utils.Utils", {
       return L > 0.35 ? "#FFF" : "#000";
     },
 
-    bytesToSize: function(bytes, decimals = 2) {
+    bytesToSize: function(bytes, decimals = 2, isPrefixVisible = true) {
       if (!+bytes) {
         return "0 Bytes";
       }
@@ -561,7 +561,7 @@ qx.Class.define("osparc.utils.Utils", {
       const dm = decimals < 0 ? 0 : decimals;
 
       const i = Math.floor(Math.log(bytes) / Math.log(k))
-      return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`
+      return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${isPrefixVisible ? sizes[i] : ""}`
     },
 
     bytesToGB: function(bytes) {
@@ -569,9 +569,19 @@ qx.Class.define("osparc.utils.Utils", {
       return Math.round(100*bytes/b2gb)/100;
     },
 
+    bytesToGiB: function(bytes) {
+      const b2gib = 1024*1024*1024;
+      return Math.round(100*bytes/b2gib)/100;
+    },
+
     gBToBytes: function(gBytes) {
       const b2gb = 1000*1000*1000;
       return gBytes*b2gb;
+    },
+
+    giBToBytes: function(giBytes) {
+      const b2gib = 1024*1024*1024;
+      return giBytes*b2gib;
     },
 
     retrieveURLAndDownload: function(locationId, fileId) {
@@ -917,15 +927,13 @@ qx.Class.define("osparc.utils.Utils", {
     },
 
     closeHangingWindows: function() {
-      // close windows
       const children = qx.core.Init.getApplication().getRoot().getChildren();
       children.forEach(child => {
-        const closeClasses = [
-          "osparc.ui.window.Window",
-          "osparc.desktop.account.MyAccountWindow"
-        ];
-        if (closeClasses.includes(child.classname)) {
-          child.close();
+        const isWindow = "modal" in qx.util.PropertyUtil.getAllProperties(child.constructor);
+        if (isWindow) {
+          // Do not call .close(), it will trigger the close signal and it might not be handled correctly
+          child.hide();
+          child.dispose();
         }
       });
     },

@@ -1028,6 +1028,7 @@ qx.Class.define("osparc.data.model.Node", {
       this.__initLoadingPage();
 
       const iframe = new osparc.widget.PersistentIframe();
+      osparc.utils.Utils.setIdToWidget(iframe.getIframe(), "iframe_"+this.getNodeId());
       if (osparc.product.Utils.isProduct("s4llite")) {
         iframe.setShowToolbar(false);
       }
@@ -1329,10 +1330,10 @@ qx.Class.define("osparc.data.model.Node", {
         });
     },
 
-    setNodeProgressSequence: function(progressType, progress) {
+    setNodeProgressSequence: function(progressType, progressReport) {
       const nodeStatus = this.getStatus();
       if (nodeStatus.getProgressSequence()) {
-        nodeStatus.getProgressSequence().addProgressMessage(progressType, progress);
+        nodeStatus.getProgressSequence().addProgressMessage(progressType, progressReport);
       }
     },
 
