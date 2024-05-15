@@ -4,6 +4,7 @@
     - Shall be used as entry point for all the queries to the database regarding projects
 
 """
+
 import logging
 from contextlib import AsyncExitStack
 from typing import Any
@@ -80,7 +81,7 @@ from .exceptions import (
     ProjectNodeResourcesInsufficientRightsError,
     ProjectNotFoundError,
 )
-from .models import ProjectDict
+from .models import ProjectDB, ProjectDict, UserProjectAccessRights
 
 _logger = logging.getLogger(__name__)
 
@@ -242,9 +243,11 @@ class ProjectDBAPI(BaseProjectDB):
         insert_values = convert_to_db_names(project)
         insert_values.update(
             {
-                "type": ProjectType.TEMPLATE.value
-                if (force_as_template or user_id is None)
-                else ProjectType.STANDARD.value,
+                "type": (
+                    ProjectType.TEMPLATE.value
+                    if (force_as_template or user_id is None)
+                    else ProjectType.STANDARD.value
+                ),
                 "prj_owner": user_id if user_id else None,
                 "hidden": hidden,
                 # NOTE: this is very bad and leads to very weird conversions.
@@ -441,6 +444,73 @@ class ProjectDBAPI(BaseProjectDB):
                 project_type,
             )
 
+    # NOTE: MD: I intentionally didn't include the workbench. There is a special interface
+    # for the workbench, and at some point, this column should be removed from the table.
+    # The same holds true for access_rights/ui/classifiers/quality, but we have decided to proceed step by step.
+    _SELECTION_PROJECT_DB_ARGS = [  # noqa: RUF012
+        projects.c.id,
+        projects.c.type,
+        projects.c.uuid,
+        projects.c.name,
+        projects.c.description,
+        projects.c.thumbnail,
+        projects.c.prj_owner,
+        projects.c.creation_date,
+        projects.c.last_change_date,
+        projects.c.access_rights,
+        projects.c.ui,
+        projects.c.classifiers,
+        projects.c.dev,
+        projects.c.quality,
+        projects.c.published,
+        projects.c.hidden,
+    ]
+
+    async def get_project_db(self, project_uuid: ProjectID) -> ProjectDB:
+        async with self.engine.acquire() as conn:
+            result = await conn.execute(
+                sa.select(*self._SELECTION_PROJECT_DB_ARGS).where(
+                    projects.c.uuid == f"{project_uuid}"
+                )
+            )
+            row = await result.fetchone()
+            if row is None:
+                raise ProjectNotFoundError(project_uuid=project_uuid)
+            return ProjectDB.from_orm(row)
+
+    async def get_project_access_rights_for_user(
+        self, user_id: UserID, project_uuid: ProjectID
+    ) -> UserProjectAccessRights:
+        """
+        User project access rights. Aggregated across all his groups.
+        """
+        # NOTE: MD: I didn't manage to write this query in sqlalchemy, but
+        # when we migrate project access rights to its own table, this will
+        # be not needed and we can use something similar to "list_wallets_for_user"
+        raw_sql = sa.text(
+            f"""
+                select uid, max(read) as read, max(write) as write, max(delete) as delete
+                from user_to_groups utg
+                join
+                    (
+                        SELECT cast(key as int) AS id, value ->>'read' as read, value ->>'write' as write, value ->>'delete' as delete
+                        FROM projects, jsonb_each(access_rights)
+                        where "uuid" = '{project_uuid}'
+                    ) prj_access_rights on utg.gid = prj_access_rights.id
+                where utg.uid = {user_id}
+                group by uid
+            """  # noqa: S608
+        )
+
+        async with self.engine.acquire() as conn:
+            result = await conn.execute(raw_sql)
+            row = await result.fetchone()
+            if row is None:
+                raise ProjectInvalidRightsError(
+                    user_id=user_id, project_uuid=project_uuid
+                )
+            return UserProjectAccessRights.from_orm(row)
+
     async def replace_project(
         self,
         new_project_data: ProjectDict,
@@ -524,6 +594,21 @@ class ProjectDBAPI(BaseProjectDB):
             return convert_to_schema_names(project, user_email, tags=tags)
         msg = "linter unhappy without this"
         raise RuntimeError(msg)
+
+    async def patch_project(
+        self, project_uuid: ProjectID, new_partial_project_data: dict
+    ) -> ProjectDB:
+        async with self.engine.acquire() as conn:
+            result = await conn.execute(
+                projects.update()
+                .values(last_change_date=sa.func.now(), **new_partial_project_data)
+                .where(projects.c.uuid == f"{project_uuid}")
+                .returning(*self._SELECTION_PROJECT_DB_ARGS)
+            )
+            row = await result.fetchone()
+            if row is None:
+                raise ProjectNotFoundError(project_uuid=project_uuid)
+            return ProjectDB.from_orm(row)
 
     async def update_project_owner_without_checking_permissions(
         self,
@@ -791,7 +876,7 @@ class ProjectDBAPI(BaseProjectDB):
         async with self.engine.acquire() as conn:
             return await project_nodes_repo.list(conn)  # type: ignore[no-any-return]
 
-    async def node_id_exists(self, node_id: str) -> bool:
+    async def node_id_exists(self, node_id: NodeID) -> bool:
         """Returns True if the node id exists in any of the available projects"""
         async with self.engine.acquire() as conn:
             num_entries = await conn.scalar(
@@ -803,12 +888,12 @@ class ProjectDBAPI(BaseProjectDB):
         assert isinstance(num_entries, int)  # nosec
         return bool(num_entries > 0)
 
-    async def list_node_ids_in_project(self, project_uuid: str) -> set[str]:
+    async def list_node_ids_in_project(self, project_uuid: ProjectID) -> set[NodeID]:
         """Returns a set containing all the node_ids from project with project_uuid"""
-        repo = ProjectNodesRepo(project_uuid=ProjectID(project_uuid))
+        repo = ProjectNodesRepo(project_uuid=project_uuid)
         async with self.engine.acquire() as conn:
             list_of_nodes = await repo.list(conn)
-        return {f"{node.node_id}" for node in list_of_nodes}
+        return {node.node_id for node in list_of_nodes}
 
     #
     # Project NODES to Pricing Units

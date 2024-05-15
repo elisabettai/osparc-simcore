@@ -40,12 +40,7 @@ from ...models.schemas.files import (
     UploadLinks,
 )
 from ...services.service_exception_handling import DEFAULT_BACKEND_SERVICE_STATUS_CODES
-from ...services.storage import (
-    AccessRight,
-    StorageApi,
-    StorageFileMetaData,
-    to_file_api_model,
-)
+from ...services.storage import StorageApi, StorageFileMetaData, to_file_api_model
 from ..dependencies.authentication import get_current_user_id
 from ..dependencies.services import get_api_client
 from ._common import API_SERVER_DEV_FEATURES_ENABLED
@@ -73,16 +68,14 @@ async def _get_file(
     file_id: UUID,
     storage_client: StorageApi,
     user_id: int,
-    access_right: AccessRight,
 ):
     """Gets metadata for a given file resource"""
 
     try:
-        stored_files: list[StorageFileMetaData] = await storage_client.search_files(
-            user_id=user_id,
-            file_id=file_id,
-            sha256_checksum=None,
-            access_right=access_right,
+        stored_files: list[
+            StorageFileMetaData
+        ] = await storage_client.search_owned_files(
+            user_id=user_id, file_id=file_id, limit=1
         )
         if not stored_files:
             msg = "Not found in storage"
@@ -233,7 +226,6 @@ async def upload_files(files: list[UploadFile] = FileParam(...)):
 @router.post(
     "/content",
     response_model=ClientFileUploadData,
-    include_in_schema=API_SERVER_DEV_FEATURES_ENABLED,
     responses=_FILE_STATUS_CODES,
 )
 @cancel_on_disconnect
@@ -289,7 +281,6 @@ async def get_file(
         file_id=file_id,
         storage_client=storage_client,
         user_id=user_id,
-        access_right="read",
     )
 
 
@@ -297,7 +288,6 @@ async def get_file(
     ":search",
     response_model=Page[File],
     responses=_FILE_STATUS_CODES,
-    include_in_schema=API_SERVER_DEV_FEATURES_ENABLED,
 )
 async def search_files_page(
     storage_client: Annotated[StorageApi, Depends(get_api_client(StorageApi))],
@@ -307,20 +297,18 @@ async def search_files_page(
     file_id: UUID | None = None,
 ):
     """Search files"""
-    stored_files: list[StorageFileMetaData] = await storage_client.search_files(
+    stored_files: list[StorageFileMetaData] = await storage_client.search_owned_files(
         user_id=user_id,
         file_id=file_id,
         sha256_checksum=sha256_checksum,
-        access_right="read",
+        limit=page_params.limit,
+        offset=page_params.offset,
     )
     if page_params.offset > len(stored_files):
         _logger.debug("File with sha256_checksum=%d not found.", sha256_checksum)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Not found in storage"
         )
-    stored_files = stored_files[page_params.offset :]
-    if len(stored_files) > page_params.limit:
-        stored_files = stored_files[: page_params.limit]
     return create_page(
         [to_file_api_model(fmd) for fmd in stored_files],
         len(stored_files),
@@ -330,7 +318,6 @@ async def search_files_page(
 
 @router.delete(
     "/{file_id}",
-    include_in_schema=API_SERVER_DEV_FEATURES_ENABLED,
     responses=_FILE_STATUS_CODES,
 )
 async def delete_file(
@@ -342,7 +329,6 @@ async def delete_file(
         file_id=file_id,
         storage_client=storage_client,
         user_id=user_id,
-        access_right="write",
     )
     await storage_client.delete_file(
         user_id=user_id, quoted_storage_file_id=file.quoted_storage_file_id
@@ -351,7 +337,6 @@ async def delete_file(
 
 @router.post(
     "/{file_id}:abort",
-    include_in_schema=API_SERVER_DEV_FEATURES_ENABLED,
     responses=DEFAULT_BACKEND_SERVICE_STATUS_CODES,
 )
 async def abort_multipart_upload(
@@ -378,7 +363,6 @@ async def abort_multipart_upload(
 @router.post(
     "/{file_id}:complete",
     response_model=File,
-    include_in_schema=API_SERVER_DEV_FEATURES_ENABLED,
     responses=_FILE_STATUS_CODES,
 )
 @cancel_on_disconnect
