@@ -53,7 +53,6 @@ qx.Class.define("osparc.data.model.Node", {
     this.setOutputs({});
 
     this.__inputNodes = [];
-    this.__exposedNodes = [];
 
     if (study) {
       this.setStudy(study);
@@ -134,6 +133,12 @@ qx.Class.define("osparc.data.model.Node", {
       check: "Object",
       // nullable: false,
       event: "changeInputs"
+    },
+
+    inputsRequired: {
+      check: "Array",
+      init: [],
+      event: "changeInputsRequired"
     },
 
     outputs: {
@@ -228,7 +233,8 @@ qx.Class.define("osparc.data.model.Node", {
     "fileUploaded": "qx.event.type.Event",
     "showInLogger": "qx.event.type.Data",
     "outputListChanged": "qx.event.type.Event",
-    "changeInputNodes": "qx.event.type.Event"
+    "changeInputNodes": "qx.event.type.Event",
+    "changeInputsRequired": "qx.event.type.Event"
   },
 
   statics: {
@@ -331,12 +337,12 @@ qx.Class.define("osparc.data.model.Node", {
   members: {
     __metaData: null,
     __inputNodes: null,
-    __exposedNodes: null,
     __settingsForm: null,
     __posX: null,
     __posY: null,
     __unresponsiveRetries: null,
     __stopRequestingStatus: null,
+    __retriesLeft: null,
 
     getWorkbench: function() {
       return this.getStudy().getWorkbench();
@@ -512,7 +518,8 @@ qx.Class.define("osparc.data.model.Node", {
       }
       this.setOutputData(nodeData.outputs);
       this.addInputNodes(nodeData.inputNodes);
-      this.addOutputNodes(nodeData.outputNodes);
+      // backwards compatible
+      this.setInputsRequired(nodeData.inputsRequired || []);
     },
 
     populateStates: function(nodeData) {
@@ -875,43 +882,17 @@ qx.Class.define("osparc.data.model.Node", {
     },
     // !---- Input Nodes -----
 
-    // ----- Output Nodes -----
-    getOutputNodes: function() {
-      return this.__exposedNodes;
-    },
-
-    addOutputNodes: function(outputNodes) {
-      if (outputNodes) {
-        outputNodes.forEach(outputNode => {
-          this.addOutputNode(outputNode);
-        });
-      }
-    },
-
-    addOutputNode: function(outputNodeId) {
-      if (!this.__exposedNodes.includes(outputNodeId)) {
-        this.__exposedNodes.push(outputNodeId);
-        this.fireEvent("outputListChanged");
-        return true;
-      }
-      return false;
-    },
-
-    removeOutputNode: function(outputNodeId) {
-      const index = this.__exposedNodes.indexOf(outputNodeId);
+    toggleInputRequired: function(portId) {
+      const inputsRequired = this.getInputsRequired();
+      const index = inputsRequired.indexOf(portId);
       if (index > -1) {
-        // remove node connection
-        this.__exposedNodes.splice(index, 1);
-        this.fireEvent("outputListChanged");
+        inputsRequired.splice(index, 1);
+      } else {
+        inputsRequired.push(portId);
       }
-      return false;
+      this.setInputsRequired(inputsRequired);
+      this.fireEvent("changeInputsRequired");
     },
-
-    isOutputNode: function(outputNodeId) {
-      const index = this.__exposedNodes.indexOf(outputNodeId);
-      return (index > -1);
-    },
-    // !---- Output Nodes -----
 
     canNodeStart: function() {
       return this.isDynamic() && ["idle", "failed"].includes(this.getStatus().getInteractive());
@@ -1265,6 +1246,7 @@ qx.Class.define("osparc.data.model.Node", {
           } = osparc.utils.Utils.computeServiceUrl(data);
           this.setDynamicV2(isDynamicV2);
           if (srvUrl) {
+            this.__retriesLeft = 40;
             this.__waitForServiceReady(srvUrl);
           }
           break;
@@ -1348,50 +1330,48 @@ qx.Class.define("osparc.data.model.Node", {
     },
 
     __waitForServiceReady: function(srvUrl) {
-      // ping for some time until it is really ready
-      const pingRequest = new qx.io.request.Xhr(srvUrl);
-      pingRequest.addListenerOnce("success", () => {
-        this.__waitForServiceWebsite(srvUrl);
-      }, this);
-      pingRequest.addListenerOnce("fail", e => {
-        const error = e.getTarget().getResponse();
-        this.getStatus().setInteractive("connecting");
-        console.log("service not ready yet, waiting... " + error);
+      this.getStatus().setInteractive("connecting");
+
+      if (this.__retriesLeft === 0) {
+        return;
+      }
+
+      const retry = () => {
+        this.__retriesLeft--;
+
         // Check if node is still there
         if (this.getWorkbench().getNode(this.getNodeId()) === null) {
           return;
         }
-        const interval = 1000;
+        const interval = 5000;
         qx.event.Timer.once(() => this.__waitForServiceReady(srvUrl), this, interval);
-      });
-      pingRequest.send();
-    },
+      };
 
-    __waitForServiceWebsite: function(srvUrl) {
-      // request the frontend to make sure it is ready
-      let retries = 5;
-      const request = new XMLHttpRequest();
-      const openAndSend = () => {
-        if (retries === 0) {
-          return;
+      // ping for some time until it is really reachable
+      try {
+        if (osparc.utils.Utils.isDevelopmentPlatform()) {
+          console.log("Connecting: about to fetch", srvUrl);
         }
-        retries--;
-        request.open("GET", srvUrl);
-        request.send();
-      };
-      const retry = () => {
-        setTimeout(() => openAndSend(), 2000);
-      };
-      request.onerror = () => retry();
-      request.ontimeout = () => retry();
-      request.onload = () => {
-        if (request.status < 200 || request.status >= 300) {
-          retry();
-        } else {
-          this.__serviceReadyIn(srvUrl);
-        }
-      };
-      openAndSend();
+        fetch(srvUrl)
+          .then(response => {
+            if (osparc.utils.Utils.isDevelopmentPlatform()) {
+              console.log("Connecting: fetch's response status", response.status);
+            }
+            if (response.status < 400) {
+              this.__serviceReadyIn(srvUrl);
+            } else {
+              console.log(`Connecting: ${srvUrl} is not reachable. Status: ${response.status}`);
+              retry();
+            }
+          })
+          .catch(err => {
+            console.error("Connecting: Error", err);
+            retry();
+          });
+      } catch (error) {
+        console.error(`Connecting: Error while checking ${srvUrl}:`, error);
+        retry();
+      }
     },
 
     __serviceReadyIn: function(srvUrl) {
@@ -1533,6 +1513,7 @@ qx.Class.define("osparc.data.model.Node", {
         inputsUnits: this.__getInputUnits(),
         inputAccess: this.getInputAccess(),
         inputNodes: this.getInputNodes(),
+        inputsRequired: this.getInputsRequired(),
         thumbnail: this.getThumbnail(),
         bootOptions: this.getBootOptions()
       };

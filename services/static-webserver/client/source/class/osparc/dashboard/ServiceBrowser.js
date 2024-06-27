@@ -124,7 +124,7 @@ qx.Class.define("osparc.dashboard.ServiceBrowser", {
 
     __itemClicked: function(card) {
       const serviceData = card.getResourceData();
-      this._openDetailsView(serviceData);
+      this._openResourceDetails(serviceData);
       this.resetSelection();
     },
 
@@ -133,7 +133,7 @@ qx.Class.define("osparc.dashboard.ServiceBrowser", {
         return;
       }
 
-      this._showLoadingPage(this.tr("Creating Study"));
+      this._showLoadingPage(this.tr("Creating ") + osparc.product.Utils.getStudyAlias());
       osparc.study.Utils.createStudyFromService(key, version)
         .then(studyId => {
           const openCB = () => this._hideLoadingPage();
@@ -171,6 +171,8 @@ qx.Class.define("osparc.dashboard.ServiceBrowser", {
       this.__addSortingButtons();
       this._addGroupByButton();
       this._addViewModeButton();
+
+      this._addResourceFilter();
 
       return this._resourcesContainer;
     },

@@ -23,7 +23,7 @@ from fastapi import FastAPI
 from models_library.users import UserID
 from models_library.wallets import WalletID
 from pytest_mock.plugin import MockerFixture
-from pytest_simcore.helpers.utils_envs import EnvVarsDict, setenvs_from_dict
+from pytest_simcore.helpers.monkeypatch_envs import EnvVarsDict, setenvs_from_dict
 from servicelib.rabbitmq import RabbitMQRPCClient
 from settings_library.ec2 import EC2Settings
 from settings_library.rabbit import RabbitSettings
@@ -37,16 +37,17 @@ from types_aiobotocore_ec2.client import EC2Client
 from types_aiobotocore_ec2.literals import InstanceTypeType
 
 pytest_plugins = [
-    "pytest_simcore.aws_server",
     "pytest_simcore.aws_ec2_service",
+    "pytest_simcore.aws_server",
+    "pytest_simcore.docker",
     "pytest_simcore.dask_scheduler",
     "pytest_simcore.docker_compose",
     "pytest_simcore.docker_swarm",
     "pytest_simcore.environment_configs",
+    "pytest_simcore.faker_users_data",
     "pytest_simcore.rabbit_service",
     "pytest_simcore.repository_paths",
     "pytest_simcore.simcore_service_library_fixtures",
-    "pytest_simcore.tmp_path_extra",
 ]
 
 

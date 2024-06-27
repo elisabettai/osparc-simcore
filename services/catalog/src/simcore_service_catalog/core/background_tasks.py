@@ -13,11 +13,11 @@ import asyncio
 import logging
 from contextlib import suppress
 from pprint import pformat
-from typing import Any, Final, cast
+from typing import Any, Final, NewType, TypeAlias, cast
 
 from fastapi import FastAPI
 from models_library.function_services_catalog.api import iter_service_docker_data
-from models_library.services import ServiceDockerData
+from models_library.services import ServiceMetaDataPublished
 from models_library.services_db import ServiceAccessRightsAtDB, ServiceMetaDataAtDB
 from packaging.version import Version
 from pydantic import ValidationError
@@ -29,12 +29,14 @@ from ..db.repositories.projects import ProjectsRepository
 from ..db.repositories.services import ServicesRepository
 from ..services import access_rights
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 # NOTE: by PC I tried to unify with models_library.services but there are other inconsistencies so I leave if for another time!
-ServiceKey = str
-ServiceVersion = str
-ServiceDockerDataMap = dict[tuple[ServiceKey, ServiceVersion], ServiceDockerData]
+ServiceKey = NewType("ServiceKey", str)
+ServiceVersion = NewType("ServiceVersion", str)
+ServiceDockerDataMap: TypeAlias = dict[
+    tuple[ServiceKey, ServiceVersion], ServiceMetaDataPublished
+]
 
 
 async def _list_services_in_registry(
@@ -50,15 +52,15 @@ async def _list_services_in_registry(
     }
     for service in registry_services:
         try:
-            service_data = ServiceDockerData.parse_obj(service)
+            service_data = ServiceMetaDataPublished.parse_obj(service)
             services[(service_data.key, service_data.version)] = service_data
 
-        except ValidationError as exc:
-            logger.warning(
-                "Skipping %s:%s from the catalog of services:\n%s",
+        except ValidationError:  # noqa: PERF203
+            _logger.warning(
+                "Skipping %s:%s from the catalog of services:",
                 service.get("key"),
                 service.get("version"),
-                exc,
+                exc_info=True,
             )
 
     return services
@@ -77,7 +79,9 @@ async def _list_services_in_database(
 async def _create_services_in_database(
     app: FastAPI,
     service_keys: set[tuple[ServiceKey, ServiceVersion]],
-    services_in_registry: dict[tuple[ServiceKey, ServiceVersion], ServiceDockerData],
+    services_in_registry: dict[
+        tuple[ServiceKey, ServiceVersion], ServiceMetaDataPublished
+    ],
 ) -> None:
     """Adds a new service in the database
 
@@ -92,7 +96,7 @@ async def _create_services_in_database(
     sorted_services = sorted(service_keys, key=_by_version)
 
     for service_key, service_version in sorted_services:
-        service_metadata: ServiceDockerData = services_in_registry[
+        service_metadata: ServiceMetaDataPublished = services_in_registry[
             (service_key, service_version)
         ]
         ## Set deprecation date to null (is valid date value for postgres)
@@ -127,7 +131,7 @@ async def _ensure_registry_and_database_are_synced(app: FastAPI) -> None:
     Notice that a services here refers to a 2-tuple (key, version)
     """
     services_in_registry: dict[
-        tuple[ServiceKey, ServiceVersion], ServiceDockerData
+        tuple[ServiceKey, ServiceVersion], ServiceMetaDataPublished
     ] = await _list_services_in_registry(app)
 
     services_in_db: set[
@@ -137,7 +141,7 @@ async def _ensure_registry_and_database_are_synced(app: FastAPI) -> None:
     # check that the db has all the services at least once
     missing_services_in_db = set(services_in_registry.keys()) - services_in_db
     if missing_services_in_db:
-        logger.debug(
+        _logger.debug(
             "Missing services in db: %s",
             pformat(missing_services_in_db),
         )
@@ -182,7 +186,7 @@ async def _ensure_published_templates_accessible(
         for service in missing_services
     ]
     if missing_services_access_rights:
-        logger.info(
+        _logger.info(
             "Adding access rights for published templates\n: %s",
             missing_services_access_rights,
         )
@@ -195,7 +199,7 @@ async def _sync_services_task(app: FastAPI) -> None:
 
     while app.state.registry_syncer_running:
         try:
-            logger.debug("Syncing services between registry and database...")
+            _logger.debug("Syncing services between registry and database...")
 
             # check that the list of services is in sync with the registry
             await _ensure_registry_and_database_are_synced(app)
@@ -206,16 +210,16 @@ async def _sync_services_task(app: FastAPI) -> None:
 
             await asyncio.sleep(app.state.settings.CATALOG_BACKGROUND_TASK_REST_TIME)
 
-        except asyncio.CancelledError:
+        except asyncio.CancelledError:  # noqa: PERF203
             # task is stopped
-            logger.info("registry syncing task cancelled")
+            _logger.info("registry syncing task cancelled")
             raise
 
         except Exception:  # pylint: disable=broad-except
             if not app.state.registry_syncer_running:
-                logger.warning("registry syncing task forced to stop")
+                _logger.warning("registry syncing task forced to stop")
                 break
-            logger.exception(
+            _logger.exception(
                 "Unexpected error while syncing registry entries, restarting now..."
             )
             # wait a bit before retrying, so it does not block everything until the director is up
@@ -232,7 +236,7 @@ async def start_registry_sync_task(app: FastAPI) -> None:
     app.state.registry_syncer_running = True
     task = asyncio.create_task(_sync_services_task(app))
     app.state.registry_sync_task = task
-    logger.info("registry syncing task started")
+    _logger.info("registry syncing task started")
 
 
 async def stop_registry_sync_task(app: FastAPI) -> None:
@@ -242,4 +246,4 @@ async def stop_registry_sync_task(app: FastAPI) -> None:
             task.cancel()
             await task
         app.state.registry_sync_task = None
-    logger.info("registry syncing task stopped")
+    _logger.info("registry syncing task stopped")

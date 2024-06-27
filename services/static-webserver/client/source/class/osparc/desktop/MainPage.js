@@ -80,14 +80,9 @@ qx.Class.define("osparc.desktop.MainPage", {
       });
   },
 
-  statics: {
-    MIN_STUDIES_PER_ROW: 4
-  },
-
   members: {
     __navBar: null,
     __dashboard: null,
-    __dashboardLayout: null,
     __loadingPage: null,
     __studyEditor: null,
 
@@ -195,7 +190,7 @@ qx.Class.define("osparc.desktop.MainPage", {
       const mainPageHandler = osparc.desktop.MainPageHandler.getInstance();
       mainPageHandler.setStack(mainStack);
 
-      const dashboardLayout = this.__dashboardLayout = this.__createDashboardStack();
+      const dashboardLayout = this.__createDashboardLayout();
       mainPageHandler.addDashboard(dashboardLayout);
 
       const loadingPage = this.__loadingPage = new osparc.ui.message.Loading();
@@ -204,38 +199,18 @@ qx.Class.define("osparc.desktop.MainPage", {
       const studyEditor = this.__studyEditor = this.__getStudyEditor();
       mainPageHandler.addStudyEditor(studyEditor);
 
-      mainPageHandler.addListener("syncStudyEditor", e => this.__syncStudyEditor(e.getData()));
-
       return mainStack;
     },
 
-    __createDashboardStack: function() {
+    __createDashboardLayout: function() {
       const dashboard = this.__dashboard = new osparc.dashboard.Dashboard();
       const tabsBar = dashboard.getChildControl("bar");
       tabsBar.set({
         paddingBottom: 6
       });
       this.__navBar.addDashboardTabButtons(tabsBar);
-      const itemWidth = osparc.dashboard.GridButtonBase.ITEM_WIDTH + osparc.dashboard.GridButtonBase.SPACING;
-      dashboard.setMinWidth(this.self().MIN_STUDIES_PER_ROW * itemWidth + 8);
-      const fitResourceCards = () => {
-        const w = document.documentElement.clientWidth;
-        const nStudies = Math.floor((w - 2*150 - 8) / itemWidth);
-        const newWidth = nStudies * itemWidth + 8;
-        if (newWidth > dashboard.getMinWidth()) {
-          dashboard.setWidth(newWidth);
-        } else {
-          dashboard.setWidth(dashboard.getMinWidth());
-        }
-      };
-      fitResourceCards();
-      window.addEventListener("resize", () => fitResourceCards());
       const dashboardLayout = new qx.ui.container.Composite(new qx.ui.layout.HBox(5));
-      dashboardLayout.add(new qx.ui.core.Widget(), {
-        flex: 1
-      });
-      dashboardLayout.add(dashboard);
-      dashboardLayout.add(new qx.ui.core.Widget(), {
+      dashboardLayout.add(dashboard, {
         flex: 1
       });
       return dashboardLayout;
@@ -283,7 +258,6 @@ qx.Class.define("osparc.desktop.MainPage", {
       osparc.desktop.MainPageHandler.getInstance().showDashboard();
       this.__navBar.show();
       this.__navBar.setStudy(null);
-      this.__navBar.setPageContext("dashboard");
       this.__dashboard.getStudyBrowser().resetSelection();
       if (this.__studyEditor) {
         this.__studyEditor.destruct();
@@ -403,14 +377,6 @@ qx.Class.define("osparc.desktop.MainPage", {
       osparc.data.Resources.fetch("studies", "close", params);
     },
 
-    __syncStudyEditor: function(pageContext = "workbench") {
-      const studyEditor = this.__studyEditor;
-      const study = studyEditor.getStudy();
-      this.__navBar.setStudy(study);
-      this.__navBar.setPageContext(pageContext);
-      studyEditor.setPageContext(pageContext);
-    },
-
     __getStudyEditor: function() {
       if (this.__studyEditor) {
         return this.__studyEditor;
@@ -429,17 +395,10 @@ qx.Class.define("osparc.desktop.MainPage", {
       studyEditor.addListener("backToDashboardPressed", () => this.__backToDashboardPressed(), this);
       studyEditor.addListener("forceBackToDashboard", () => this.__showDashboard(), this);
       studyEditor.addListener("userIdled", () => this.__backToDashboard(), this);
-      studyEditor.addListener("slidesEdit", () => {
-        studyEditor.editSlides();
-      }, this);
-      studyEditor.addListener("slidesAppStart", () => {
-        this.__navBar.setPageContext(osparc.navigation.NavigationBar.PAGE_CONTEXT[2]);
-        studyEditor.setPageContext(osparc.navigation.NavigationBar.PAGE_CONTEXT[2]);
-      }, this);
-      studyEditor.addListener("slidesStop", () => {
-        this.__navBar.setPageContext(osparc.navigation.NavigationBar.PAGE_CONTEXT[1]);
-        this.__studyEditor.setPageContext(osparc.navigation.NavigationBar.PAGE_CONTEXT[1]);
-      }, this);
+      studyEditor.addListener("changeStudy", e => {
+        const study = e.getData();
+        this.__navBar.setStudy(study);
+      });
       return studyEditor;
     }
   }

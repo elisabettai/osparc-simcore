@@ -17,15 +17,21 @@ from redis.backoff import ExponentialBackoff
 from settings_library.redis import RedisDatabase, RedisSettings
 from tenacity import retry
 
-from .background_task import periodic_task, start_periodic_task, stop_periodic_task
+from .background_task import periodic_task, stop_periodic_task
 from .logging_utils import log_catch, log_context
 from .retry_policies import RedisRetryPolicyUponInitialization
-from .utils import logged_gather
 
 _DEFAULT_LOCK_TTL: Final[datetime.timedelta] = datetime.timedelta(seconds=10)
+_DEFAULT_SOCKET_TIMEOUT: Final[datetime.timedelta] = datetime.timedelta(seconds=30)
 
 
-logger = logging.getLogger(__name__)
+_DEFAULT_DECODE_RESPONSES: Final[bool] = True
+_DEFAULT_HEALTH_CHECK_INTERVAL: Final[datetime.timedelta] = datetime.timedelta(
+    seconds=5
+)
+
+
+_logger = logging.getLogger(__name__)
 
 
 class BaseRedisError(PydanticErrorMixin, RuntimeError):
@@ -43,7 +49,14 @@ class CouldNotConnectToRedisError(BaseRedisError):
 @dataclass
 class RedisClientSDK:
     redis_dsn: str
+    decode_responses: bool = _DEFAULT_DECODE_RESPONSES
+    health_check_interval: datetime.timedelta = _DEFAULT_HEALTH_CHECK_INTERVAL
+
     _client: aioredis.Redis = field(init=False)
+    _health_check_task: Task | None = None
+    _is_healthy: bool = (
+        True  # revert back to False when stop_periodic_task issue is fixed
+    )
 
     @property
     def redis(self) -> aioredis.Redis:
@@ -59,29 +72,59 @@ class RedisClientSDK:
                 redis.exceptions.ConnectionError,
                 redis.exceptions.TimeoutError,
             ],
+            socket_timeout=_DEFAULT_SOCKET_TIMEOUT.total_seconds(),
+            socket_connect_timeout=_DEFAULT_SOCKET_TIMEOUT.total_seconds(),
             encoding="utf-8",
-            decode_responses=True,
+            decode_responses=self.decode_responses,
         )
 
-    @retry(**RedisRetryPolicyUponInitialization(logger).kwargs)
+    @retry(**RedisRetryPolicyUponInitialization(_logger).kwargs)
     async def setup(self) -> None:
         if not await self._client.ping():
             await self.shutdown()
             raise CouldNotConnectToRedisError(dsn=self.redis_dsn)
-        logger.info(
+
+        self._is_healthy = True
+        # Disabled till issue with stop_periodic_task is fixed
+        # self._health_check_task = start_periodic_task(
+        #     self._check_health,
+        #     interval=self.health_check_interval,
+        #     task_name=f"redis_service_health_check_{self.redis_dsn}",
+        # )
+
+        _logger.info(
             "Connection to %s succeeded with %s",
             f"redis at {self.redis_dsn=}",
             f"{self._client=}",
         )
 
     async def shutdown(self) -> None:
-        await self._client.close(close_connection_pool=True)
+        if self._health_check_task:
+            await stop_periodic_task(self._health_check_task)
+
+        # NOTE: redis-py does not yet completely fill all the needed types for mypy
+        await self._client.aclose(close_connection_pool=True)  # type: ignore[attr-defined]
 
     async def ping(self) -> bool:
-        try:
-            return await self._client.ping()
-        except redis.exceptions.ConnectionError:
-            return False
+        with log_catch(_logger, reraise=False):
+            await self._client.ping()
+            return True
+        return False
+
+    async def _check_health(self) -> None:
+        self._is_healthy = await self.ping()
+
+    @property
+    def is_healthy(self) -> bool:
+        """Returns the result of the last health check.
+        If redis becomes available, after being not available,
+        it will once more return ``True``
+
+        Returns:
+            ``False``: if the service is no longer reachable
+            ``True``: when service is reachable
+        """
+        return self._is_healthy
 
     @contextlib.asynccontextmanager
     async def lock_context(
@@ -119,8 +162,8 @@ class RedisClientSDK:
 
         async def _extend_lock(lock: Lock) -> None:
             with log_context(
-                logger, logging.DEBUG, f"Extending lock {lock_unique_id}"
-            ), log_catch(logger, reraise=False):
+                _logger, logging.DEBUG, f"Extending lock {lock_unique_id}"
+            ), log_catch(_logger, reraise=False):
                 await lock.reacquire()
 
         try:
@@ -156,7 +199,7 @@ class RedisClientSDK:
                 await ttl_lock.release()
             except redis.exceptions.LockNotOwnedError:
                 # if this appears outside tests it can cause issues since something might be happening
-                logger.warning(
+                _logger.warning(
                     "Attention: lock is no longer owned. This is unexpected and requires investigation"
                 )
 
@@ -165,49 +208,11 @@ class RedisClientSDK:
         return output
 
 
-class RedisClientSDKHealthChecked(RedisClientSDK):
-    """
-    Provides access to ``is_healthy`` property, to be used for defining
-    health check handlers.
-    """
-
-    def __init__(
-        self,
-        redis_dsn: str,
-        health_check_interval: datetime.timedelta = datetime.timedelta(seconds=5),
-    ) -> None:
-        super().__init__(redis_dsn)
-        self.health_check_interval: datetime.timedelta = health_check_interval
-        self._health_check_task: Task | None = None
-        self._is_healthy: bool = True
-
-    @property
-    def is_healthy(self) -> bool:
-        """Provides the status of Redis.
-        If redis becomes available, after being not available,
-        it will once more return ``True``
-
-        Returns:
-            ``False``: if the service is no longer reachable
-            ``True``: when service is reachable
-        """
-        return self._is_healthy
-
-    async def _check_health(self) -> None:
-        self._is_healthy = await self.ping()
-
-    async def setup(self) -> None:
-        await super().setup()
-        self._health_check_task = start_periodic_task(
-            self._check_health,
-            interval=self.health_check_interval,
-            task_name="redis_service_health_check",
-        )
-
-    async def shutdown(self) -> None:
-        if self._health_check_task:
-            await stop_periodic_task(self._health_check_task)
-        await super().shutdown()
+@dataclass(frozen=True)
+class RedisManagerDBConfig:
+    database: RedisDatabase
+    decode_responses: bool = _DEFAULT_DECODE_RESPONSES
+    health_check_interval: datetime.timedelta = _DEFAULT_HEALTH_CHECK_INTERVAL
 
 
 @dataclass
@@ -216,20 +221,27 @@ class RedisClientsManager:
     Manages the lifetime of redis client sdk connections
     """
 
-    databases: set[RedisDatabase]
+    databases_configs: set[RedisManagerDBConfig]
     settings: RedisSettings
 
     _client_sdks: dict[RedisDatabase, RedisClientSDK] = field(default_factory=dict)
 
     async def setup(self) -> None:
-        for db in self.databases:
-            self._client_sdks[db] = client_sdk = RedisClientSDK(
-                redis_dsn=self.settings.build_redis_dsn(db)
+        for config in self.databases_configs:
+            self._client_sdks[config.database] = RedisClientSDK(
+                redis_dsn=self.settings.build_redis_dsn(config.database),
+                decode_responses=config.decode_responses,
+                health_check_interval=config.health_check_interval,
             )
-            await client_sdk.setup()
+
+        for client in self._client_sdks.values():
+            await client.setup()
 
     async def shutdown(self) -> None:
-        await logged_gather(*(c.shutdown() for c in self._client_sdks.values()))
+        # NOTE: somehow using logged_gather is not an option
+        # doing so will make the shutdown procedure hang
+        for client in self._client_sdks.values():
+            await client.shutdown()
 
     def client(self, database: RedisDatabase) -> RedisClientSDK:
         return self._client_sdks[database]
